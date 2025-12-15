@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>P&ID IO Counter — OCR BASED</title>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3/build/pdf.min.js"></script>
+<style>
+body { font-family: Arial; margin:16px; background: #f0f4f8; color: #333; }
+h2 { color: #1a73e8; }
+textarea { width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #ccc; font-family: monospace; }
+input[type="file"], button { margin-top: 8px; }
+button { padding: 10px 20px; background: #1a73e8; color: #fff; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
+button:hover { background: #155ab6; }
+table { border-collapse: collapse; margin-top: 20px; width: 100%; background: #fff; border-radius: 4px; overflow: hidden; }
+th, td { border: 1px solid #ddd; padding: 8px; text-align: center; vertical-align: middle; }
+th { background: #1a73e8; color: #fff; }
+tr:nth-child(even) { background: #f2f2f2; }
+tr:hover { background: #e0e7ff; }
+td.tags { text-align: left; font-family: monospace; }
+span.tag-badge { display:inline-block; margin:2px; padding:2px 6px; border-radius:4px; background:#cce5ff; font-size:12px; }
+.settings { margin-top:12px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+.small { font-size:13px; color:#444; }
+.hidden { display: none; }
+.label-inline { display: inline-block; margin-right: 8px; }
+</style>
+</head>
+<body>
+<h2>P&ID IO Counter — OCR BASED</h2>
+<div class="settings">
+  <label class="label-inline"><input type="checkbox" id="legendsEnable"> Enable legend input</label>
+</div>
+<div id="legendContainer" class="hidden">
+  <p>Paste legend codes (one per line):</p>
+  <textarea id="legend" rows="10">-FC-
+-QC-
+-TC-
+-PC-
+-LC-
+-TE-
+SICLR
+-LS-
+-PS-
+-FS-
+-PP-
+-FMS-
+-XV-
+-FV-
+-SC-
+-LG-
+-XC-
+-WC-
+-UV-
+-TOC-
+-CP-</textarea>
+  <br/>
+</div>
+<input type="file" id="file" accept="application/pdf"/>
+<button id="run">Process PDF</button>
+<button id="exportCSV">Export CSV</button>
+<div class="settings">
+  <label><input type="checkbox" id="allowNumeric" checked> Allow numeric prefixes/suffixes (eg. 01-TC-101)</label>
+  <label class="hidden"><input type="checkbox" id="wholeWord"> Whole-word match (matches exact token containing legend)</label>
+  <span class="small hidden">(Regex matching tightened; enable whole-word to be stricter)</span>
+</div>
+<h3>IO Counts</h3>
+<table id="ioTable">
+    <thead>
+        <tr>
+            <th>Type</th>
+            <th>Count</th>
+            <th>Tags</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr><td>AI</td><td id="aiCount">0</td><td class="tags" id="aiTags"></td></tr>
+        <tr><td>DI</td><td id="diCount">0</td><td class="tags" id="diTags"></td></tr>
+        <tr><td>Default DI</td><td id="defaultDiCount">0</td><td class="tags" id="defaultDiTags"></td></tr>
+        <tr><td>AO</td><td id="aoCount">0</td><td class="tags" id="aoTags"></td></tr>
+        <tr><td>DO</td><td id="doCount">0</td><td class="tags" id="doTags"></td></tr>
+        <tr><td>Default DO</td><td id="defaultDoCount">0</td><td class="tags" id="defaultDoTags"></td></tr>
+        <tr><td>Valve</td><td id="valveCount">0</td><td class="tags" id="valveTags"></td></tr>
+        <tr><td>Unknown</td><td id="unknownCount">0</td><td class="tags" id="unknownTags"></td></tr>
+    </tbody>
+</table>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3/build/pdf.worker.min.js';
+const fileInput = document.getElementById('file');
+const runBtn = document.getElementById('run');
+const exportBtn = document.getElementById('exportCSV');
+
+function parseLegends(txt){ return txt.split(/\r?\n/).map(l=>l.trim()).filter(Boolean).map(s=>s.toUpperCase()); }
+
+const typeMap = { 
+    AI: ['-FC-', '-QC-', '-TC-', '-PC-', '-LC-', '-TE-', '-XC-', '-WC-', '-UV-', '-TOC-'], 
+    DI: ['-LS-', '-PS-', '-FS-', '-FMS-', 'SICLR', '-LG-', '-CP-'], 
+    AO: ['-SC-', '-XC-'], 
+    DO: ['-PP-', '-LG-'], 
+    Valve: ['-XV-', '-FV-'] 
+};
+
+function normalizeLegend(tag){ return tag.replace(/\s+/g,'').toUpperCase(); }
+
+function getTypes(code){ 
+    const types = []; 
+    const normalized = normalizeLegend(code); 
+    for(const [type, prefixes] of Object.entries(typeMap)){ 
+        for(const p of prefixes){ 
+            if(p === 'SICLR'){ 
+                if(normalized.includes('SICLR')) types.push(type); 
+            } else if(p === '-CP-'){
+                const m = normalized.match(/-CP-(\d{3})/); 
+                if(m && m[1].startsWith('4')){ 
+                    types.push('DI'); 
+                    types.push('DO'); 
+                }
+            } else if(p === '-SC-'){
+                const m = normalized.match(/-SC-(\d{3})/i);
+                if(m){
+                    const n = parseInt(m[1],10);
+                    if(n === 101){ types.push('AI'); } 
+                    else if(n >= 101 && n <= 299){ types.push('DI'); } 
+                }
+            } else { 
+                if(normalized.includes(p)) types.push(type); 
+            } 
+        } 
+    } 
+    return types.length ? types : ['Unknown']; 
+}
+
+const legendsEnableCheckbox = document.getElementById('legendsEnable');
+const legendContainer = document.getElementById('legendContainer');
+legendsEnableCheckbox.addEventListener('change', () => { 
+    if(legendsEnableCheckbox.checked) legendContainer.classList.remove('hidden'); 
+    else legendContainer.classList.add('hidden'); 
+});
+
+runBtn.addEventListener('click', async ()=>{
+    const f = fileInput.files[0];
+    if(!f){ alert('Choose a PDF'); return; }
+    const legends = legendsEnableCheckbox.checked ? parseLegends(document.getElementById('legend').value) : Object.values(typeMap).flat();
+    const allowNumeric = document.getElementById('allowNumeric').checked;
+    const wholeWord = document.getElementById('wholeWord').checked;
+    const ab = await f.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({data:ab}).promise;
+
+    let counts = {AI:0,DI:0,AO:0,DO:0,Valve:0,Unknown:0};
+    let tagsPerType = {AI:{},DI:{},AO:{},DO:{},Valve:{},Unknown:{}};
+    const defaultDOTags = ['LAMP_RED','LAMP_YELLOW','LAMP_BLUE','LAMP_GREEN','BUZZER'];
+    defaultDOTags.forEach(t => { tagsPerType.DO[t] = 0; });
+    const defaultDITags = ['24VDC_CONTROL_ON','EMERGENCY_INPUT','3PHASE_HEALTHY_SIGNAL'];
+    defaultDITags.forEach(t => { tagsPerType.DI[t] = 0; });
+
+    for(let pageNum=1; pageNum<=pdf.numPages; pageNum++){
+        const page = await pdf.getPage(pageNum);
+        const content = await page.getTextContent();
+        const fullText = content.items.map(i=>i.str).join(' ');
+
+        if(legends.length){
+            for(let code of legends){
+                const core = code.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
+                let pattern;
+                if(allowNumeric){ pattern = `\\b[0-9]{0,3}-?[A-Z0-9]{0,4}?${core}[A-Z0-9-]{0,8}\\b`; } 
+                else { pattern = `\\b[A-Z-]*${core}[A-Z-]*\\b`; }
+                if(wholeWord){ pattern = `\\b${core}\\b`; }
+
+                const regex = new RegExp(pattern, 'gi');
+                const matches = fullText.match(regex);
+                if(matches){
+                    matches.forEach(tag=>{
+                        const tagClean = normalizeLegend(tag);
+                        const typesSet = new Set(getTypes(tagClean));
+
+                        if(tagClean.includes('-LG-')){ typesSet.add('DI'); typesSet.add('DO'); }
+                        if(tagClean.includes('-XC-')){ const m = tagClean.match(/-XC-([0-9]+)/i); if(!m || !/^7\d\d$/.test(m[1])) typesSet.delete('AI'); }
+
+                        if(tagClean.includes('-SC-')){
+                            const m = tagClean.match(/-SC-([0-9]+)/i);
+                            if(m){ const n = parseInt(m[1],10); if(!isNaN(n) && n >= 101 && n <= 299){ typesSet.add('DI'); } }
+                            const isHardWire = confirm(`${tagClean}: Is this HARD WIRE?`);
+                            if(isHardWire) typesSet.add('AO'); else typesSet.delete('AO');
+                        }
+
+                        if(tagClean.includes('-WC-')){
+                            const isHardWire = confirm(`${tagClean}: Is this HARD WIRE?`);
+                            if(isHardWire){ typesSet.add('AI'); } 
+                            else { typesSet.delete('AI'); }
+                            typesSet.delete('AO'); // Never AO
+                        }
+
+                        typesSet.forEach(type=>{ 
+                            if(!tagsPerType[type][tagClean]){
+                                counts[type] = (counts[type]||0)+1; 
+                                tagsPerType[type][tagClean] = 1; 
+                            } 
+                        });
+                    });
+                }
+            }
+        }
+    }
+
+    function updateRow(type){
+        const countElem = document.getElementById(type.toLowerCase()+'Count');
+        const tagsElem = document.getElementById(type.toLowerCase()+'Tags');
+
+        if(type === 'DO'){
+            const scannedDOTags = Object.entries(tagsPerType.DO).filter(([tag]) => !defaultDOTags.includes(tag));
+            let doCount = scannedDOTags.reduce((sum,[_,c])=>sum+c,0);
+            let tagsHtml = scannedDOTags.map(([tag])=>`<span class="tag-badge">${tag}</span>`).join('');
+            const defaultDoRow = document.getElementById('defaultDoCount').parentElement;
+            const defaultDoTagsElem = document.getElementById('defaultDoTags');
+
+            if(!updateRow.promptedDO){
+                if(confirm("Do you want to add the default DO (Tower Lamp) tags to the DO count?")){
+                    doCount += defaultDOTags.length;
+                    tagsHtml += defaultDOTags.map(t=>`<span class="tag-badge">${t}</span>`).join('');
+                    defaultDoRow.style.display = 'none';
+                } else {
+                    defaultDoRow.style.display = '';
+                    defaultDoTagsElem.innerHTML = defaultDOTags.map(t=>`<span class="tag-badge">${t}</span>`).join('');
+                    document.getElementById('defaultDoCount').textContent = defaultDOTags.length;
+                }
+                updateRow.promptedDO = true;
+            }
+
+            countElem.textContent = doCount;
+            tagsElem.innerHTML = tagsHtml;
+
+        } else if(type === 'DI'){
+            const scannedDITags = Object.entries(tagsPerType.DI).filter(([tag]) => !defaultDITags.includes(tag));
+            let diCount = scannedDITags.reduce((sum,[_,c])=>sum+c,0);
+            let tagsHtml = scannedDITags.map(([tag])=>`<span class="tag-badge">${tag}</span>`).join('');
+            const defaultDiRow = document.getElementById('defaultDiCount').parentElement;
+            const defaultDiTagsElem = document.getElementById('defaultDiTags');
+
+            if(!updateRow.promptedDI){
+                if(confirm("Do you want to add the default DI tags to the DI count?")){
+                    diCount += defaultDITags.length;
+                    tagsHtml += defaultDITags.map(t=>`<span class="tag-badge">${t}</span>`).join('');
+                    defaultDiRow.style.display = 'none';
+                } else {
+                    defaultDiRow.style.display = '';
+                    defaultDiTagsElem.innerHTML = defaultDITags.map(t=>`<span class="tag-badge">${t}</span>`).join('');
+                    document.getElementById('defaultDiCount').textContent = defaultDITags.length;
+                }
+                updateRow.promptedDI = true;
+            }
+
+            countElem.textContent = diCount;
+            tagsElem.innerHTML = tagsHtml;
+
+        } else {
+            countElem.textContent = counts[type] || 0;
+            const tagsList = Object.entries(tagsPerType[type] || {}).map(([tag])=>`<span class="tag-badge">${tag}</span>`);
+            tagsElem.innerHTML = tagsList.join('') || '';
+        }
+    }
+
+    ['AI','DI','AO','DO','Valve','Unknown'].forEach(updateRow);
+    document.getElementById('unknownCount').parentElement.style.display = 'none';
+});
+
+// Fixed CSV Export
+exportBtn.addEventListener('click', ()=>{
+    let csv = 'Type,Count,Tags\n';
+    const typeIds = {
+        'AI':'aiTags',
+        'DI':'diTags',
+        'Default DI':'defaultDiTags',
+        'AO':'aoTags',
+        'DO':'doTags',
+        'Default DO':'defaultDoTags',
+        'Valve':'valveTags',
+        'Unknown':'unknownTags'
+    };
+    Object.entries(typeIds).forEach(([type, id])=>{
+        const tagsElem = document.getElementById(id);
+        const tags = Array.from(tagsElem.getElementsByClassName('tag-badge'))
+                          .map(span=>span.textContent)
+                          .join('; ');
+        const count = document.getElementById(id.replace('Tags','Count')).textContent;
+        csv += `${type},${count},"${tags}"\n`;
+    });
+
+    const blob = new Blob([csv], {type:'text/csv'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'io_counts.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+});
+</script>
+<!-- ✅ ONLY ADDITION -->
+<footer style="
+  margin-top:24px;
+  padding:12px;
+  text-align:center;
+  font-size:13px;
+  color:#555;
+">
+  Developed by <strong>Vysakh NV</strong> | P&amp;ID IO Counter — OCR Based
+</footer>
+</body>
+</html>
