@@ -119,7 +119,7 @@ function getTypes(code){
                 if(m){
                     const n = parseInt(m[1],10);
                     if(n === 101){ types.push('AI'); } 
-                    else if(n >= 101 && n <= 299){ types.push('DI'); } 
+                    else if(n >= 101 && n <= 101){ types.push('DI'); } 
                 }
             } else { 
                 if(normalized.includes(p)) types.push(type); 
@@ -305,5 +305,6 @@ exportBtn.addEventListener('click', ()=>{
 </footer>
 </body>
 </html>
+
 
 
